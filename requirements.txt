@@ -1,5 +1,5 @@
 torch>=1.7.0
-torchtext==0.8.0
+torchtext>=0.8.0
 spacy>=3.0.0
 numpy>=1.19.0
 tqdm>=4.48.0
