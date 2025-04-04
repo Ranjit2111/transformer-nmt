@@ -689,4 +689,63 @@ class IWSLTDataset:
         Returns:
             Tuple of (train, validation, test) iterators
         """
-        return self.train_iterator, self.valid_iterator, self.test_iterator 
+        return self.train_iterator, self.valid_iterator, self.test_iterator
+
+    def _create_fallback_dataset(self):
+        """
+        Create a small fallback dataset when the IWSLT dataset is not available.
+        """
+        # Create a sample dataset with some English-Vietnamese pairs
+        print("Creating fallback sample dataset...")
+        
+        # Training pairs (source, target)
+        train_pairs = [
+            # Basic sentences for demonstration
+            ('hello', 'xin chào'),
+            ('thank you', 'cảm ơn bạn'),
+            ('how are you', 'bạn khỏe không'),
+            ('good morning', 'chào buổi sáng'),
+            ('good night', 'chúc ngủ ngon'),
+            ('my name is john', 'tôi tên là john'),
+            ('i am a student', 'tôi là sinh viên'),
+            ('i like to read books', 'tôi thích đọc sách'),
+            ('what is your name', 'tên bạn là gì'),
+            ('where are you from', 'bạn đến từ đâu'),
+            ('i am from america', 'tôi đến từ mỹ'),
+            ('how old are you', 'bạn bao nhiêu tuổi'),
+            ('i am twenty years old', 'tôi hai mươi tuổi'),
+            ('the weather is nice today', 'thời tiết hôm nay đẹp'),
+            ('i am learning vietnamese', 'tôi đang học tiếng việt'),
+            ('do you speak english', 'bạn có nói tiếng anh không'),
+            ('i do not understand', 'tôi không hiểu'),
+            ('please speak slowly', 'xin hãy nói chậm'),
+            ('can you help me', 'bạn có thể giúp tôi không'),
+            ('i need to go now', 'tôi cần phải đi bây giờ'),
+        ]
+        
+        # Validation pairs (source, target)
+        valid_pairs = [
+            ('excuse me', 'xin lỗi'),
+            ('this is delicious', 'cái này ngon'),
+            ('how much is this', 'cái này giá bao nhiêu'),
+            ('have a nice day', 'chúc một ngày tốt lành'),
+        ]
+        
+        # Test pairs (source, target)
+        test_pairs = [
+            ('goodbye', 'tạm biệt'),
+            ('see you tomorrow', 'hẹn gặp lại ngày mai'),
+            ('i love vietnam', 'tôi yêu việt nam'),
+            ('i want to eat pho', 'tôi muốn ăn phở'),
+        ]
+        
+        print(f"  Train: {len(train_pairs)} examples")
+        print(f"  Validation: {len(valid_pairs)} examples")
+        print(f"  Test: {len(test_pairs)} examples")
+        
+        # Convert pairs to examples
+        train_examples = self._pairs_to_examples(train_pairs)
+        valid_examples = self._pairs_to_examples(valid_pairs)
+        test_examples = self._pairs_to_examples(test_pairs)
+        
+        return train_examples, valid_examples, test_examples 

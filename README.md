@@ -1,269 +1,158 @@
-# Transformer Implementation for Neural Machine Translation
+# Transformer Neural Machine Translation (NMT)
 
-This repository contains an implementation of the Transformer architecture for Neural Machine Translation, specifically focusing on English-Vietnamese translation using the IWSLT dataset.
+A PyTorch implementation of the Transformer model for Neural Machine Translation, based on the paper ["Attention Is All You Need"](https://arxiv.org/abs/1706.03762) by Vaswani et al.
 
 ## Project Overview
 
-The Transformer model is based on the architecture described in the paper ["Attention Is All You Need"](https://arxiv.org/abs/1706.03762) by Vaswani et al. It uses self-attention mechanisms instead of recurrent or convolutional neural networks to capture dependencies between input and output sequences.
+This project implements a Transformer-based Neural Machine Translation system for English to Vietnamese translation. The implementation is based on the architecture described in the "Attention Is All You Need" paper, which introduced the Transformer model.
 
-## Prerequisites
+Key features:
+- Complete implementation of the Transformer architecture
+- Support for both modern and legacy torchtext APIs
+- Integrated training, evaluation, and translation pipelines
+- Simplified demo script for quick demonstrations
 
-- Python 3.8+ (3.10 recommended)
-- NVIDIA GPU with CUDA support (for faster training)
-- Windows 10/11 or Linux
+## Architecture
 
-## Installation Guide
+The Transformer model consists of:
 
-### 1. Clone the Repository
+1. **Encoder**: Processes the source language (English)
+   - Embedding layer (including positional encoding)
+   - Multiple encoder layers, each with:
+     - Multi-head self-attention mechanism
+     - Position-wise feed-forward network
+     - Residual connections and layer normalization
 
+2. **Decoder**: Generates the target language (Vietnamese) 
+   - Embedding layer (including positional encoding)
+   - Multiple decoder layers, each with:
+     - Masked multi-head self-attention
+     - Multi-head attention over encoder output
+     - Position-wise feed-forward network
+     - Residual connections and layer normalization
+
+3. **Final Linear Layer**: Projects decoder output to logits over the target vocabulary
+
+### Key Components
+
+- **Multi-Head Attention**: Allows the model to focus on different parts of the input sequence
+- **Position-wise Feed-Forward Networks**: Apply transformations to each position independently
+- **Positional Encoding**: Adds information about the position of tokens in the sequence
+- **Residual Connections and Layer Normalization**: Help with training deep networks
+
+## Requirements
+
+- Python 3.8+
+- PyTorch 2.0.0+
+- torchtext 0.15.0+
+- Additional dependencies in `requirements.txt`
+
+Install dependencies:
 ```bash
-git clone https://github.com/yourusername/transformer.git
-cd transformer
+pip install -r requirements.txt
 ```
 
-### 2. Set Up a Virtual Environment
+## Usage
+
+### Quick Demo
+
+The easiest way to see the model in action is to run the demonstration script:
 
 ```bash
-python -m venv venv
-venv\Scripts\activate  # Windows
-# OR
-source venv/bin/activate  # Linux/Mac
+python -m src.scripts.demo
 ```
 
-### 3. Install CUDA Toolkit (for GPU acceleration)
+This will:
+1. Initialize a small model with reduced parameters
+2. Load a fallback dataset (if IWSLT is not available)
+3. Train the model for a specified number of epochs
+4. Provide an interactive translation interface
 
-If you have an NVIDIA GPU and want to enable GPU acceleration (highly recommended for training):
+### Training a Model
 
-#### a. Check your GPU model and compatibility:
-```bash
-# Windows PowerShell
-powershell -Command "Get-WmiObject -Class Win32_VideoController | Select-Object Name, DriverVersion"
-```
-
-#### b. Download and Install CUDA Toolkit:
-1. Go to [NVIDIA CUDA Downloads](https://developer.nvidia.com/cuda-downloads)
-2. Select your operating system, architecture, and version
-3. Download and run the installer (CUDA 11.8 recommended for PyTorch 2.0.0)
-4. Choose "Express Installation"
-5. Restart your computer after installation
-
-#### c. Verify CUDA Installation:
-```bash
-nvcc --version
-```
-
-#### d. Install cuDNN:
-1. Go to [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) (requires free NVIDIA developer account)
-2. Download cuDNN for your CUDA version
-3. Extract and copy files to your CUDA installation:
-   - Copy `bin/*.dll` to `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\bin\`
-   - Copy `include/*.h` to `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\include\`
-   - Copy `lib/*.lib` to `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\lib\x64\`
-
-### 4. Install Required Dependencies
-
-First, install the core dependencies:
+To train a model with default settings:
 
 ```bash
-pip install numpy==1.24.3
-```
-
-Then install PyTorch and torchtext with the correct versions:
-
-#### For CPU-only:
-```bash
-pip install torch==2.0.0 torchtext==0.15.0
-```
-
-#### For GPU acceleration:
-```bash
-pip install torch==2.0.0 torchtext==0.15.0 --index-url https://download.pytorch.org/whl/cu118
-```
-
-Finally, install the remaining dependencies:
-```bash
-pip install spacy>=3.0.0 tqdm>=4.48.0 pyyaml>=5.4.0 matplotlib>=3.3.0 tensorboard>=2.4.0
-```
-
-### 5. Download Spacy Language Models
-
-```bash
-python -m spacy download en_core_web_sm
-```
-
-### 6. Verify Installation
-
-Run the diagnostic script to verify your installation:
-
-```bash
-python debug_torch.py
-```
-
-This should show that PyTorch and torchtext are installed correctly. If torchtext.legacy is not available, you may need to reinstall torchtext:
-
-```bash
-pip uninstall -y torchtext
-pip install torchtext==0.15.0
-```
-
-### 7. Verify GPU Detection
-
-```bash
-python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}'); print(f'GPU device name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}')"
-```
-
-This should print `GPU available: True` and your GPU model name if everything is set up correctly.
-
-## Modern API Support
-
-This project now supports both the legacy (`torchtext.legacy`) and modern torchtext API (v0.15.0+). The migration was necessary because newer versions of torchtext (≥0.12) have removed the legacy API components like `Field` and `BucketIterator`.
-
-### How It Works
-
-- The codebase automatically detects which API is available and routes to the appropriate implementation
-- Legacy API is used when available for backward compatibility
-- Modern implementation is used automatically when the legacy API is not available
-- All training and inference pipelines work with both implementations
-
-### Testing the Modern Implementation
-
-To verify that the modern implementation works correctly:
-
-```bash
-# Test the modern implementation components
-python test_modern_implementation.py
-
-# Test training and inference with the modern implementation
-python test_training.py
-```
-
-For more details about the migration, see the [Migration Summary](migration_summary.md).
-
-## Running the Project
-
-### Using the Unified Script
-
-The easiest way to run the project is using the unified script:
-
-```bash
-# Training
 python -m src.scripts.run_model train --epochs 10
+```
 
-# Evaluation
-python -m src.scripts.run_model evaluate --checkpoint results/checkpoints/best.pt
+Additional training parameters:
+- `--batch_size`: Set batch size (default: 32)
+- `--learning_rate`: Set learning rate (default: 0.0005)
+- `--checkpoint`: Path to save model checkpoints (default: results/checkpoints/best.pt)
 
-# Translation
+### Translation
+
+To translate text using a trained model:
+
+```bash
 python -m src.scripts.run_model translate --checkpoint results/checkpoints/best.pt --text "Hello, how are you?"
+```
 
-# Interactive translation
+For interactive translation:
+
+```bash
 python -m src.scripts.run_model translate --checkpoint results/checkpoints/best.pt --interactive
-```
-
-The unified script works with both the legacy and modern torchtext APIs.
-
-### Legacy Scripts
-
-Alternatively, you can use the individual scripts:
-
-#### Training the Model
-
-To train the model with default parameters:
-
-```bash
-python -m src.scripts.train --epochs 10
-```
-
-Additional training parameters can be adjusted in `src/config/config.yaml` or specified as command-line arguments:
-
-```bash
-python -m src.scripts.train --epochs 20 --batch_size 64 --learning_rate 0.0001
-```
-
-#### Evaluating the Model
-
-To evaluate a trained model on the test set:
-
-```bash
-python -m src.scripts.translate --checkpoint results/checkpoints/best.pt --evaluate
-```
-
-#### Translating Text
-
-To translate custom text using a trained model:
-
-```bash
-python -m src.scripts.translate --checkpoint results/checkpoints/best.pt --text "Your English text here"
 ```
 
 ## Project Structure
 
-- `main.py`: Entry point for training, evaluation, and inference
-- `src/transformer/`: Core model implementation
-  - `layers/`: Transformer building blocks (attention, encoders, decoders)
-  - `utils/`: Utility functions for data processing and visualization
-- `src/config/`: Configuration files
-- `src/scripts/`: Training, evaluation, and inference scripts
-
-## Troubleshooting
-
-### NumPy Compatibility Issues
-
-If you encounter NumPy compatibility errors:
-
 ```
-A module that was compiled using NumPy 1.x cannot be run in NumPy 2.x
-```
-
-Make sure to install NumPy 1.24.3 as specified in requirements.txt:
-
-```bash
-pip install numpy==1.24.3
-```
-
-### CUDA Not Detected
-
-If PyTorch doesn't detect your GPU:
-
-1. Verify CUDA installation: `nvcc --version`
-2. Check GPU drivers are up to date
-3. Ensure you installed the CUDA-enabled version of PyTorch
-4. Restart your computer
-
-### torchtext.legacy Not Available
-
-If your code fails with:
-```
-ImportError: cannot import name 'Field' from 'torchtext.legacy.data'
+transformer/
+├── src/
+│   ├── config/
+│   │   └── hyperparameters.py   # Model hyperparameters
+│   ├── scripts/
+│   │   ├── run_model.py         # Unified script for training/translation
+│   │   └── demo.py              # Demonstration script
+│   └── transformer/
+│       ├── components/
+│       │   ├── attention.py     # Multi-head attention implementation
+│       │   ├── encoder.py       # Transformer encoder
+│       │   ├── decoder.py       # Transformer decoder
+│       │   └── transformer.py   # Complete Transformer model
+│       └── utils/
+│           ├── tokenization.py          # Tokenization utilities
+│           ├── data_handling.py         # Data handling interface
+│           └── modern_data_handling.py  # Modern torchtext implementation
+├── results/
+│   └── checkpoints/             # Saved model checkpoints
+├── requirements.txt             # Project dependencies
+└── README.md                    # This file
 ```
 
-Try reinstalling torchtext with the exact version needed:
+## Notes for Reviewers
 
-```bash
-pip uninstall -y torchtext
-pip install torchtext==0.15.0
-```
+This project implements a Transformer model from scratch for Neural Machine Translation. Key aspects to highlight in review:
 
-If the issue persists, check if you're using pip's cache, which might have a corrupted package:
+1. **Transformer Architecture Implementation**:
+   - Self-attention mechanism in `attention.py`
+   - Encoder implementation in `encoder.py`
+   - Decoder implementation in `decoder.py`
+   - Complete model in `transformer.py`
 
-```bash
-pip cache purge
-pip install torchtext==0.15.0
-```
+2. **Training and Inference Pipeline**:
+   - Data processing and batching
+   - Training loop with validation
+   - Beam search for better translations (on roadmap)
+
+3. **Modern API Compatibility**:
+   - Support for the latest torchtext API
+   - Migration from legacy to modern torchtext
+
+## Future Improvements
+
+- Implement beam search for better translation quality
+- Add support for additional language pairs
+- Improve tokenization with BPE or SentencePiece
+- Add model compression techniques
+- Support for transfer learning from pre-trained models
 
 ## License
 
-[MIT License](LICENSE)
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgments
 
-- Paper: ["Attention Is All You Need"](https://arxiv.org/abs/1706.03762)
-- IWSLT Dataset: [International Workshop on Spoken Language Translation](https://iwslt.org/)
-
-## Project Maintenance
-
-For information about maintaining the project, including details about:
-- Test files and which ones can be removed
-- Configuration and hyperparameters management
-- Modern vs legacy API compatibility
-
-Please see the [Maintenance Guide](MAINTENANCE.md).
+- The implementation is inspired by the paper "Attention Is All You Need" by Vaswani et al.
+- Thanks to the PyTorch and torchtext teams for their excellent libraries
