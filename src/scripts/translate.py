@@ -3,7 +3,7 @@ Translation script for TransformerNMT model.
 """
 import os
 import argparse
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import torch
 import torch.nn.functional as F
@@ -12,6 +12,14 @@ from src.config import params
 from src.transformer.components.transformer import TransformerNMT
 from src.transformer.utils.tokenization import Tokenizer
 from src.transformer.utils.data_handling import IWSLTDataset
+from src.transformer.utils.training_utils import USING_LEGACY
+
+# For compatibility with modern implementation
+try:
+    from src.transformer.utils.modern_data_handling import ModernVocab
+    HAS_MODERN = True
+except ImportError:
+    HAS_MODERN = False
 
 
 class Translator:
@@ -23,8 +31,8 @@ class Translator:
         self,
         model: TransformerNMT,
         tokenizer: Tokenizer,
-        source_vocab: dict,
-        target_vocab: dict,
+        source_vocab: Any,
+        target_vocab: Any,
         max_length: int = 256,
         device: torch.device = torch.device("cpu")
     ):
@@ -46,9 +54,19 @@ class Translator:
         self.max_length = max_length
         self.device = device
         
-        # Special token indices
-        self.sos_idx = self.target_vocab.stoi['<sos>']
-        self.eos_idx = self.target_vocab.stoi['<eos>']
+        # Handle either vocabulary type (legacy or modern)
+        if hasattr(self.target_vocab, 'stoi'):
+            # Legacy vocabulary
+            self.sos_idx = self.target_vocab.stoi['<sos>']
+            self.eos_idx = self.target_vocab.stoi['<eos>']
+            self.get_index = lambda vocab, token: vocab.stoi.get(token, vocab.stoi['<unk>'])
+            self.get_token = lambda vocab, idx: vocab.itos[idx]
+        else:
+            # Modern vocabulary (ModernVocab from our implementation)
+            self.sos_idx = self.target_vocab.get_stoi()['<sos>']
+            self.eos_idx = self.target_vocab.get_stoi()['<eos>']
+            self.get_index = lambda vocab, token: vocab.get_stoi().get(token, vocab.get_stoi()['<unk>'])
+            self.get_token = lambda vocab, idx: vocab.get_itos()[idx]
         
     def translate(
         self,
@@ -76,8 +94,8 @@ class Translator:
         # Tokenize the source text
         tokens = self.tokenizer.tokenize_en(text)
         
-        # Convert tokens to indices
-        token_indices = [self.source_vocab.stoi.get(token, self.source_vocab.stoi['<unk>']) for token in tokens]
+        # Convert tokens to indices - use the appropriate method based on vocabulary type
+        token_indices = [self.get_index(self.source_vocab, token) for token in tokens]
         
         # Create a tensor and add batch dimension
         src_tensor = torch.LongTensor(token_indices).unsqueeze(0).to(self.device)
@@ -95,11 +113,11 @@ class Translator:
         if beam_size > 1:
             # Use beam search for translation
             translations = self._beam_search(enc_src, src_mask, beam_size, max_length)
-            best_translation = translations[0][0]  # Get tokens from best hypothesis
+            best_translation = translations[0][1]  # Get tokens from best hypothesis
             
             # Convert token indices to tokens
-            tokens = [self.target_vocab.itos[idx] for idx in best_translation if idx != self.eos_idx 
-                     and idx != self.sos_idx]
+            tokens = [self.get_token(self.target_vocab, idx) for idx in best_translation 
+                     if idx != self.eos_idx and idx != self.sos_idx]
             
         else:
             # Use greedy decoding
@@ -125,8 +143,8 @@ class Translator:
                     break
             
             # Convert token indices to tokens (excluding SOS and EOS)
-            tokens = [self.target_vocab.itos[idx] for idx in trg_indexes if idx != self.eos_idx 
-                    and idx != self.sos_idx]
+            tokens = [self.get_token(self.target_vocab, idx) for idx in trg_indexes 
+                    if idx != self.eos_idx and idx != self.sos_idx]
             
         # Detokenize
         translation = self.tokenizer.detokenize_vi(tokens)
@@ -153,8 +171,11 @@ class Translator:
             List of (sequence, score) pairs, sorted by score
         """
         # Initialize with SOS token
-        k = beam_size
+        k = min(beam_size, len(self.target_vocab.stoi) - 1)  # Adjust k if vocabulary is smaller
         
+        if k < 1:
+            k = 1  # Ensure k is at least 1
+            
         # Initial sequence: (score, sequence)
         sequences = [(0.0, [self.sos_idx])]
         
@@ -187,10 +208,12 @@ class Translator:
                 probs = F.log_softmax(logits, dim=0)
                 
                 # Get top k candidates
-                top_probs, top_indices = probs.topk(k)
+                vocab_size = probs.shape[0]
+                top_k = min(k, vocab_size)  # Ensure we don't request more candidates than vocab size
+                top_probs, top_indices = probs.topk(top_k)
                 
                 # Add new candidates
-                for i in range(k):
+                for i in range(top_k):
                     token_idx = top_indices[i].item()
                     token_prob = top_probs[i].item()
                     candidate = (score + token_prob, seq + [token_idx])
@@ -229,22 +252,45 @@ def main():
     device = hyperparams.device
     print(f"Using device: {device}")
     
+    # Display API version in use
+    if USING_LEGACY:
+        print("Using legacy torchtext API")
+    else:
+        print("Using modern torchtext API")
+    
     # Set up tokenizer
     tokenizer = Tokenizer()
     
     # Load dataset to get the vocabularies
-    dataset = IWSLTDataset(
-        tokenizer=tokenizer,
-        batch_size=hyperparams.batch_size,
-        device=device,
-        max_length=hyperparams.max_seq_length,
-        min_freq=hyperparams.min_freq
-    )
-    
-    # Get special token indices
-    src_pad_idx = dataset.source_field.vocab.stoi['<pad>']
-    trg_pad_idx = dataset.target_field.vocab.stoi['<pad>']
-    trg_sos_idx = dataset.target_field.vocab.stoi['<sos>']
+    try:
+        dataset = IWSLTDataset(
+            tokenizer=tokenizer,
+            batch_size=hyperparams.batch_size,
+            device=device,
+            max_length=hyperparams.max_seq_length,
+            min_freq=hyperparams.min_freq
+        )
+        
+        # Get special token indices from the proper source
+        if hasattr(dataset, 'pad_idx'):
+            # Modern implementation exposes these directly
+            src_pad_idx = dataset.pad_idx
+            trg_pad_idx = dataset.pad_idx
+            trg_sos_idx = dataset.sos_idx
+        else:
+            # Legacy implementation
+            src_pad_idx = dataset.source_field.vocab.stoi['<pad>']
+            trg_pad_idx = dataset.target_field.vocab.stoi['<pad>']
+            trg_sos_idx = dataset.target_field.vocab.stoi['<sos>']
+            
+    except Exception as e:
+        print(f"Error loading dataset: {e}")
+        if not USING_LEGACY and not HAS_MODERN:
+            raise ImportError(
+                "Neither torchtext.legacy nor modern implementation could be loaded. "
+                "Please install torchtext==0.15.0 with torch==2.0.0, or ensure the modern implementation is available."
+            )
+        raise
     
     # Create model
     model = TransformerNMT(
@@ -264,44 +310,37 @@ def main():
     
     # Load checkpoint
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    
-    print(f"Model loaded from {args.checkpoint}")
+    model.load_state_dict(checkpoint['model'])
     
     # Create translator
     translator = Translator(
         model=model,
         tokenizer=tokenizer,
-        source_vocab=dataset.source_field.vocab,
-        target_vocab=dataset.target_field.vocab,
+        source_vocab=dataset.source_field.vocab if hasattr(dataset, 'source_field') else dataset._dataset.source_field.vocab,
+        target_vocab=dataset.target_field.vocab if hasattr(dataset, 'target_field') else dataset._dataset.target_field.vocab,
         max_length=hyperparams.max_seq_length,
         device=device
     )
     
     # Interactive mode
     if args.interactive:
-        print("Interactive translation mode (Ctrl+C to exit):")
-        try:
-            while True:
-                text = input("\nEnter English text: ")
-                if not text.strip():
-                    continue
-                    
-                translation = translator.translate(text, beam_size=args.beam_size)
-                print(f"Vietnamese translation: {translation}")
-                
-        except KeyboardInterrupt:
-            print("\nExiting...")
+        print("Interactive translation mode. Enter text to translate or 'q' to quit.")
+        while True:
+            text = input("\nEnglish: ")
+            if text.lower() == 'q':
+                break
+            
+            translation = translator.translate(text, beam_size=args.beam_size)
+            print(f"Vietnamese: {translation}")
     
-    # Translate a single text
+    # Single text translation
     elif args.text:
         translation = translator.translate(args.text, beam_size=args.beam_size)
         print(f"English: {args.text}")
         print(f"Vietnamese: {translation}")
-        
+    
     else:
-        parser.error("Either --text or --interactive must be specified")
+        parser.print_help()
 
 
 if __name__ == "__main__":
