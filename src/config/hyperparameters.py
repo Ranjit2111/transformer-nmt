@@ -30,9 +30,14 @@ class HyperParameters:
             self.config = yaml.safe_load(f)
             
         # Device configuration
-        self.device = torch.device(
-            self.config['device'] if torch.cuda.is_available() else "cpu"
-        )
+        # Try to handle the case where torch.device might not be available
+        try:
+            self.device = torch.device(
+                self.config['device'] if torch.cuda.is_available() else "cpu"
+            )
+        except AttributeError:
+            # Fallback if torch.device is not available
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         # Model parameters
         self.d_model = self.config['model']['d_model']
