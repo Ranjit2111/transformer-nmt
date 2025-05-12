@@ -28,8 +28,6 @@ ENV/
 .venv
 
 # Model checkpoints and datasets
-data/
-.data/
 results/
 checkpoints/
 *.pt
