@@ -18,7 +18,6 @@ from torch.nn.utils.rnn import pad_sequence
 
 # Modern torchtext imports
 from torchtext.vocab import build_vocab_from_iterator, Vocab
-from torchtext.data.utils import get_tokenizer as get_torchtext_tokenizer
 
 from src.transformer.utils.tokenization import Tokenizer
 
