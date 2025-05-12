@@ -178,21 +178,53 @@ class CustomIWSLTDataset:
         """
         print("Building vocabulary...")
         
-        # Build source vocabulary from training data
+        # Get raw training data as strings
         train_attrs = self.train_data.get_attrs()
+        print(f"Number of training examples: {len(train_attrs)}")
+        
+        # Tokenize the data explicitly before building vocabulary
+        print("Tokenizing training data...")
+        # Source data tokenization
+        tokenized_src = []
+        for example in train_attrs:
+            if isinstance(example.src, str):
+                tokens = self.source_field.tokenize(example.src)
+                tokenized_src.append(tokens)
+            else:
+                tokenized_src.append(example.src)  # Already tokenized
+                
+        # Target data tokenization
+        tokenized_tgt = []
+        for example in train_attrs:
+            if isinstance(example.trg, str):
+                tokens = self.target_field.tokenize(example.trg)
+                tokenized_tgt.append(tokens)
+            else:
+                tokenized_tgt.append(example.trg)  # Already tokenized
+        
+        # Show samples
+        if tokenized_src:
+            print(f"Sample tokenized source (first 10 tokens): {tokenized_src[0][:10]}")
+        if tokenized_tgt:
+            print(f"Sample tokenized target (first 10 tokens): {tokenized_tgt[0][:10]}")
+        
+        # Build source vocabulary from tokenized data
+        print("Building source vocabulary...")
         self.source_field.build_vocab(
-            [ex.src for ex in train_attrs], 
+            tokenized_src, 
             min_freq=self.min_freq
         )
         
-        # Build target vocabulary from training data
+        # Build target vocabulary from tokenized data
+        print("Building target vocabulary...")
         self.target_field.build_vocab(
-            [ex.trg for ex in train_attrs], 
+            tokenized_tgt, 
             min_freq=self.min_freq
         )
         
         print(f"  Source vocabulary size: {len(self.source_field.vocab)}")
         print(f"  Target vocabulary size: {len(self.target_field.vocab)}")
+        print(f"  Min frequency: {self.min_freq}")
         
     def _create_iterators(self):
         """

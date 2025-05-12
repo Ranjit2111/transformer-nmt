@@ -8,7 +8,7 @@ the legacy API including Field, BucketIterator, and the legacy IWSLT dataset.
 from typing import Tuple
 import os
 import urllib.request
-from collections import namedtuple
+from collections import namedtuple, Counter
 
 
 import torch
@@ -60,28 +60,37 @@ class ModernVocab:
             specials.remove('<unk>')
             specials = ['<unk>'] + specials
             
-        if tokens is not None:
-            # Create vocabulary using our custom implementation
-            self.vocab = build_vocab_from_iterator(
-                [[t] for t in tokens], 
-                min_freq=min_freq, 
-                specials=specials
-            )
-            # Set default index to the <unk> token
-            self.vocab.set_default_index(0)  # <unk> is at index 0
-        else:
-            # Create empty vocabulary with just the special tokens
-            self.vocab = build_vocab_from_iterator(
-                [[]], 
-                min_freq=min_freq,
-                specials=specials
-            )
-            self.vocab.set_default_index(0)  # <unk> is at index 0
+        # Build vocabulary
+        counter = Counter()
+        if tokens:
+            # If tokens is a set, convert to list
+            if isinstance(tokens, set):
+                tokens = list(tokens)
+                
+            # Count token frequencies
+            if isinstance(tokens, (list, tuple)):
+                counter.update(tokens)
+                
+        # Create token to index mapping
+        self.stoi = {}
+        idx = 0
+        
+        # Add specials first
+        for token in specials:
+            self.stoi[token] = idx
+            idx += 1
             
-        # Get itos and stoi from the custom Vocab
-        self.itos = self.vocab.get_itos()
-        self.stoi = self.vocab.get_stoi()
-            
+        # Add tokens that meet min_freq
+        for token, count in counter.most_common():
+            if token not in self.stoi and count >= min_freq:
+                self.stoi[token] = idx
+                idx += 1
+                
+        # Create reverse mapping
+        self.itos = [None] * len(self.stoi)
+        for token, idx in self.stoi.items():
+            self.itos[idx] = token
+        
     def __len__(self):
         """
         Get vocabulary size.
@@ -89,7 +98,7 @@ class ModernVocab:
         Returns:
             Number of tokens in vocabulary
         """
-        return len(self.itos)
+        return len(self.stoi)
 
 class ModernField:
     """
@@ -157,24 +166,46 @@ class ModernField:
             **kwargs: Additional arguments
         """
         # Extract all tokens from all datasets
-        all_tokens = set()
+        counter = Counter()
+        all_tokens = []
+        print(f"Building vocabulary with {len(args)} datasets")
+        
+        token_count = 0
+        example_count = 0
+        
         for dataset in args:
-            for example in dataset:
-                if hasattr(example, 'src'):
-                    # If example is from legacy dataset
-                    text = example.src
-                else:
-                    # Assume example is a string or list of tokens
-                    text = example
-                
-                # Tokenize and add to tokens
-                if isinstance(text, str):
-                    tokens = self.tokenize(text)
-                else:
-                    # Already tokenized
-                    tokens = text
+            if isinstance(dataset, list):
+                example_count += len(dataset)
+                # Dataset is a list of tokenized sentences
+                for tokens in dataset:
+                    if tokens:
+                        token_count += len(tokens)
+                        counter.update(tokens)
+                        all_tokens.extend(tokens)
+            else:
+                example_count += 1
+                # Handle other types of datasets
+                for example in dataset:
+                    if hasattr(example, 'src'):
+                        # If example is from legacy dataset
+                        text = example.src
+                    else:
+                        # Assume example is a string or list of tokens
+                        text = example
                     
-                all_tokens.update(tokens)
+                    # Tokenize and add to tokens
+                    if isinstance(text, str):
+                        tokens = self.tokenize(text)
+                    else:
+                        # Already tokenized
+                        tokens = text
+                    
+                    token_count += len(tokens)
+                    counter.update(tokens)
+                    all_tokens.extend(tokens)
+        
+        print(f"Processed {example_count} examples with {token_count} total tokens")
+        print(f"Found {len(counter)} unique tokens")
                 
         # Create vocabulary with special tokens
         specials = []
@@ -186,8 +217,27 @@ class ModernField:
             specials.append(self.pad_token)
         if '<unk>' not in specials:
             specials = ['<unk>'] + specials
-            
-        self.vocab = ModernVocab(all_tokens, specials=specials, min_freq=min_freq)
+        
+        print(f"Adding {len(specials)} special tokens: {specials}")
+        
+        # Build vocabulary directly using counter
+        token_to_idx = {}
+        idx = 0
+        
+        # Add specials first
+        for special in specials:
+            token_to_idx[special] = idx
+            idx += 1
+        
+        # Add all tokens that meet min_freq
+        for token, count in counter.most_common():
+            if count >= min_freq and token not in token_to_idx:
+                token_to_idx[token] = idx
+                idx += 1
+        
+        # Create vocab with the mapping
+        self.vocab = Vocab(token_to_idx)
+        print(f"Final vocabulary size: {len(self.vocab)}")
         
     def process(self, text):
         """

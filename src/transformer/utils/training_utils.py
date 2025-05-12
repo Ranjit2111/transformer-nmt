@@ -158,7 +158,17 @@ class Trainer:
         
         start_time = time.time()
         
-        for i, batch in enumerate(iterator):
+        # Create a tqdm progress bar
+        total_batches = len(iterator)
+        progress_bar = tqdm(
+            enumerate(iterator),
+            total=total_batches,
+            desc=f"Epoch {self.epoch+1}",
+            bar_format="{l_bar}{bar:30}{r_bar}",
+            ncols=100
+        )
+        
+        for i, batch in progress_bar:
             # Extract source and target from batch
             if hasattr(batch, 'src') and hasattr(batch, 'trg'):
                 src = batch.src
@@ -209,6 +219,14 @@ class Trainer:
             epoch_loss += loss.item()
             self.step += 1
             
+            # Update progress bar with current loss
+            current_loss = epoch_loss / (i + 1)
+            current_ppl = math.exp(current_loss)
+            progress_bar.set_postfix({
+                'loss': f'{current_loss:.4f}',
+                'ppl': f'{current_ppl:.2f}'
+            })
+            
             # Log training info
             if self.step % self.print_every == 0:
                 step_time = time.time() - start_time
@@ -217,12 +235,6 @@ class Trainer:
                 # Calculate perplexity
                 step_loss = epoch_loss / (i + 1)
                 step_ppl = math.exp(step_loss)
-                
-                print(f'Epoch: {self.epoch+1} | '
-                      f'Step: {self.step} | '
-                      f'Loss: {step_loss:.4f} | '
-                      f'PPL: {step_ppl:.4f} | '
-                      f'Steps/s: {steps_per_sec:.2f}')
                 
                 # Log to TensorBoard
                 if self.writer is not None:
@@ -233,7 +245,7 @@ class Trainer:
                     if self.scheduler is not None:
                         self.writer.add_scalar(
                             'train/lr', 
-                            self.scheduler.get_lr()[0], 
+                            self.scheduler.get_last_lr()[0], 
                             self.step
                         )
                         
@@ -242,6 +254,9 @@ class Trainer:
             # Save checkpoint
             if self.save_dir is not None and self.step % self.save_every == 0:
                 self.save_checkpoint(f'step_{self.step}')
+        
+        # Close progress bar
+        progress_bar.close()
                 
         # Calculate epoch loss and perplexity
         epoch_loss = epoch_loss / len(iterator)
@@ -267,8 +282,18 @@ class Trainer:
         self.model.eval()
         epoch_loss = 0
         
+        # Create a validation progress bar
+        total_batches = len(iterator)
+        progress_bar = tqdm(
+            enumerate(iterator),
+            total=total_batches,
+            desc="Validating",
+            bar_format="{l_bar}{bar:30}{r_bar}",
+            ncols=100
+        )
+        
         with torch.no_grad():
-            for i, batch in enumerate(iterator):
+            for i, batch in progress_bar:
                 # Extract source and target from batch
                 if hasattr(batch, 'src') and hasattr(batch, 'trg'):
                     src = batch.src
@@ -296,6 +321,17 @@ class Trainer:
                 # Calculate loss
                 loss = self.criterion(output, trg)
                 epoch_loss += loss.item()
+                
+                # Update progress bar with current loss
+                current_loss = epoch_loss / (i + 1)
+                current_ppl = math.exp(current_loss)
+                progress_bar.set_postfix({
+                    'loss': f'{current_loss:.4f}',
+                    'ppl': f'{current_ppl:.2f}'
+                })
+        
+        # Close progress bar
+        progress_bar.close()
         
         # Calculate epoch loss and perplexity
         epoch_loss = epoch_loss / len(iterator)
@@ -325,17 +361,37 @@ class Trainer:
             Dictionary of training history
         """
         patience_counter = 0
+        training_start_time = time.time()
         
-        for epoch in range(n_epochs):
+        print(f"Starting training for {n_epochs} epochs")
+        print(f"Training on {len(train_iterator)} batches per epoch")
+        print(f"Validating on {len(valid_iterator)} batches per epoch")
+        print("-" * 60)
+        
+        # Create an epochs progress tracker
+        epochs_progress = tqdm(
+            range(n_epochs),
+            desc="Training Progress",
+            unit="epoch",
+            position=0,
+            leave=True,
+            bar_format="{l_bar}{bar:30}{r_bar}",
+            ncols=100
+        )
+        
+        for epoch in epochs_progress:
             self.epoch = epoch
+            epoch_start_time = time.time()
             
             # Train
-            start_time = time.time()
             train_loss, train_ppl = self.train_epoch(train_iterator, pad_idx)
-            train_time = time.time() - start_time
             
             # Evaluate
             valid_loss, valid_ppl = self.evaluate(valid_iterator, pad_idx)
+            
+            # Calculate epoch time
+            epoch_time = time.time() - epoch_start_time
+            total_time = time.time() - training_start_time
             
             # Log metrics
             self.train_losses.append(train_loss)
@@ -350,28 +406,48 @@ class Trainer:
                 self.writer.add_scalar('epoch/train_ppl', train_ppl, epoch+1)
                 self.writer.add_scalar('epoch/valid_ppl', valid_ppl, epoch+1)
                 
-            # Print epoch summary
-            print(f'Epoch: {epoch+1} | Time: {train_time:.2f}s')
-            print(f'\tTrain Loss: {train_loss:.4f} | Train PPL: {train_ppl:.4f}')
-            print(f'\tValid Loss: {valid_loss:.4f} | Valid PPL: {valid_ppl:.4f}')
+            # Update progress bar with epoch results
+            epochs_progress.set_postfix({
+                'train_loss': f'{train_loss:.4f}',
+                'train_ppl': f'{train_ppl:.2f}',
+                'valid_loss': f'{valid_loss:.4f}',
+                'valid_ppl': f'{valid_ppl:.2f}',
+                'time': f'{epoch_time:.1f}s'
+            })
+                
+            # Print epoch results
+            print(f"Epoch: {epoch+1}/{n_epochs} | "
+                  f"Train Loss: {train_loss:.4f} | Train PPL: {train_ppl:.4f} | "
+                  f"Valid Loss: {valid_loss:.4f} | Valid PPL: {valid_ppl:.4f} | "
+                  f"Epoch time: {epoch_time:.2f}s | Total time: {total_time/60:.1f}m")
             
-            # Save best model
+            # Check if this is the best model
             if valid_loss < self.best_valid_loss:
-                self.best_valid_loss = valid_loss
-                if self.save_dir is not None:
-                    self.save_checkpoint('best')
                 patience_counter = 0
+                self.best_valid_loss = valid_loss
+                
+                # Save best model
+                if self.save_dir is not None:
+                    print(f"New best validation loss: {valid_loss:.4f}. Saving checkpoint...")
+                    self.save_checkpoint('best_model')
             else:
                 patience_counter += 1
                 
-            # Save epoch checkpoint
-            if self.save_dir is not None:
-                self.save_checkpoint(f'epoch_{epoch+1}')
-                
             # Early stopping
             if early_stopping_patience is not None and patience_counter >= early_stopping_patience:
-                print(f'Early stopping after {epoch+1} epochs')
+                print(f"Early stopping after {epoch+1} epochs without improvement.")
                 break
+                
+            # Save checkpoint at the end of each epoch
+            if self.save_dir is not None:
+                self.save_checkpoint(f'epoch_{epoch+1}')
+        
+        # Close the progress bar
+        epochs_progress.close()
+        
+        # Print final training time
+        total_time = time.time() - training_start_time
+        print(f"Training complete. Total time: {total_time/60:.2f} minutes")
                 
         # Return training history
         return {
