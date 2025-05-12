@@ -1,25 +1,13 @@
 """
-Translation script for TransformerNMT model.
+Translator utility for TransformerNMT model inference.
 """
-import os
-import argparse
 from typing import List, Optional, Dict, Any
 
 import torch
 import torch.nn.functional as F
 
-from src.config import params
 from src.transformer.components.transformer import TransformerNMT
 from src.transformer.utils.tokenization import Tokenizer
-from src.transformer.utils.data_handling import IWSLTDataset
-from src.transformer.utils.training_utils import USING_LEGACY
-
-# For compatibility with modern implementation
-try:
-    from src.transformer.utils.modern_data_handling import ModernVocab
-    HAS_MODERN = True
-except ImportError:
-    HAS_MODERN = False
 
 
 class Translator:
@@ -226,122 +214,4 @@ class Translator:
             if all(s[-1] == self.eos_idx for _, s in sequences):
                 break
                 
-        return sequences
-
-
-def main():
-    """
-    Main function for translation with the TransformerNMT model.
-    """
-    # Set up command line arguments
-    parser = argparse.ArgumentParser(description="Translate with TransformerNMT model")
-    parser.add_argument("--config", type=str, help="Path to config file")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
-    parser.add_argument("--beam_size", type=int, default=5, help="Beam size for beam search")
-    parser.add_argument("--text", type=str, help="Text to translate")
-    parser.add_argument("--interactive", action="store_true", help="Interactive translation mode")
-    args = parser.parse_args()
-    
-    # Load hyperparameters
-    if args.config:
-        hyperparams = params.__class__(args.config)
-    else:
-        hyperparams = params
-    
-    # Set device
-    device = hyperparams.device
-    print(f"Using device: {device}")
-    
-    # Display API version in use
-    if USING_LEGACY:
-        print("Using legacy torchtext API")
-    else:
-        print("Using modern torchtext API")
-    
-    # Set up tokenizer
-    tokenizer = Tokenizer()
-    
-    # Load dataset to get the vocabularies
-    try:
-        dataset = IWSLTDataset(
-            tokenizer=tokenizer,
-            batch_size=hyperparams.batch_size,
-            device=device,
-            max_length=hyperparams.max_seq_length,
-            min_freq=hyperparams.min_freq
-        )
-        
-        # Get special token indices from the proper source
-        if hasattr(dataset, 'pad_idx'):
-            # Modern implementation exposes these directly
-            src_pad_idx = dataset.pad_idx
-            trg_pad_idx = dataset.pad_idx
-            trg_sos_idx = dataset.sos_idx
-        else:
-            # Legacy implementation
-            src_pad_idx = dataset.source_field.vocab.stoi['<pad>']
-            trg_pad_idx = dataset.target_field.vocab.stoi['<pad>']
-            trg_sos_idx = dataset.target_field.vocab.stoi['<sos>']
-            
-    except Exception as e:
-        print(f"Error loading dataset: {e}")
-        if not USING_LEGACY and not HAS_MODERN:
-            raise ImportError(
-                "Neither torchtext.legacy nor modern implementation could be loaded. "
-                "Please install torchtext==0.15.0 with torch==2.0.0, or ensure the modern implementation is available."
-            )
-        raise
-    
-    # Create model
-    model = TransformerNMT(
-        src_pad_idx=src_pad_idx,
-        trg_pad_idx=trg_pad_idx,
-        trg_sos_idx=trg_sos_idx,
-        src_vocab_size=dataset.source_vocab_size,
-        trg_vocab_size=dataset.target_vocab_size,
-        d_model=hyperparams.d_model,
-        n_head=hyperparams.n_heads,
-        max_seq_length=hyperparams.max_seq_length,
-        ffn_hidden=hyperparams.ffn_hidden,
-        n_layers=hyperparams.n_layers,
-        dropout=hyperparams.dropout,
-        device=device
-    ).to(device)
-    
-    # Load checkpoint
-    checkpoint = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(checkpoint['model'])
-    
-    # Create translator
-    translator = Translator(
-        model=model,
-        tokenizer=tokenizer,
-        source_vocab=dataset.source_field.vocab if hasattr(dataset, 'source_field') else dataset._dataset.source_field.vocab,
-        target_vocab=dataset.target_field.vocab if hasattr(dataset, 'target_field') else dataset._dataset.target_field.vocab,
-        max_length=hyperparams.max_seq_length,
-        device=device
-    )
-    
-    # Interactive mode
-    if args.interactive:
-        print("Interactive translation mode. Enter text to translate or 'q' to quit.")
-        while True:
-            text = input("\nEnglish: ")
-            if text.lower() == 'q':
-                break
-            
-            translation = translator.translate(text, beam_size=args.beam_size)
-            print(f"Vietnamese: {translation}")
-    
-    # Single text translation
-    elif args.text:
-        translation = translator.translate(args.text, beam_size=args.beam_size)
-        print(f"English: {args.text}")
-        print(f"Vietnamese: {translation}")
-    
-    else:
-        parser.print_help()
-
-
-if __name__ == "__main__":
-    main() 
+        return sequences 

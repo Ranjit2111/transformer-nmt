@@ -4,19 +4,13 @@ Demonstration script for the Transformer NMT model.
 This script provides a simplified demonstration of the Transformer NMT model
 with a mini-training session that can run quickly on CPU.
 """
-import argparse
 import torch
 import time
 import os
-import yaml
-from pathlib import Path
-
-from src.config.hyperparameters import params
-from src.transformer.utils.data_handling import IWSLTDataset
+from src.transformer.utils.modern_data_handling import IWSLTDataset
 from src.transformer.utils.tokenization import Tokenizer
 from src.transformer.components.transformer import TransformerNMT
 
-# Minimal hyperparameters for quick CPU training
 MINI_HYPERPARAMETERS = {
     "hidden_dim": 128,
     "encoder_layers": 2,
@@ -36,12 +30,10 @@ MINI_HYPERPARAMETERS = {
 
 def train_model(dataset, model, epochs=1, save_path=None, optimizer=None):
     """Train the model for a specified number of epochs."""
-    # Training setup
     criterion = torch.nn.CrossEntropyLoss(ignore_index=dataset.pad_idx)
     if optimizer is None:
         optimizer = torch.optim.Adam(model.parameters(), lr=MINI_HYPERPARAMETERS['learning_rate'])
     
-    # Ensure save directory exists
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
     

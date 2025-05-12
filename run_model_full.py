@@ -15,15 +15,9 @@ import time
 from src.config import params
 from src.transformer.components.transformer import TransformerNMT
 from src.transformer.utils.tokenization import Tokenizer
-from src.transformer.utils.data_handling import USING_LEGACY
 from src.transformer.utils.training_utils import Trainer
-
-# For compatibility with modern implementation
-try:
-    from src.transformer.utils.modern_data_handling import TranslationDataset, ModernField, ModernBucketIterator
-    HAS_MODERN = True
-except ImportError:
-    HAS_MODERN = False
+from src.transformer.utils.modern_data_handling import TranslationDataset, ModernField, ModernBucketIterator
+from src.transformer.utils.translator import Translator
 
 
 class CustomIWSLTDataset:
@@ -264,13 +258,6 @@ def setup_model_and_dataset(args, hyperparams):
     # Set up tokenizer
     tokenizer = Tokenizer()
     
-    # Display API version in use
-    if USING_LEGACY:
-        print("Using legacy torchtext API")
-    else:
-        print("Using modern torchtext API")
-    
-    # Load full dataset
     try:
         # Use our custom dataset loader that points to the manually downloaded files
         dataset = CustomIWSLTDataset(
@@ -288,12 +275,6 @@ def setup_model_and_dataset(args, hyperparams):
             
     except Exception as e:
         print(f"Error loading dataset: {e}")
-        if not USING_LEGACY and not HAS_MODERN:
-            raise ImportError(
-                "Neither torchtext.legacy nor modern implementation could be loaded. "
-                "Please install torchtext==0.15.0 with torch==2.0.0, or ensure the modern implementation is available."
-            )
-        raise
     
     # Create model
     model = TransformerNMT(
@@ -459,8 +440,6 @@ def translate(args, hyperparams):
     model, dataset, tokenizer = setup_model_and_dataset(args, hyperparams)
     
     # Create translator
-    from src.scripts.translate import Translator
-    
     translator = Translator(
         model=model,
         tokenizer=tokenizer,

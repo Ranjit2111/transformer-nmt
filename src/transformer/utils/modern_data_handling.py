@@ -5,23 +5,22 @@ This module provides a modern implementation of the data handling utilities
 that are compatible with torchtext 0.15.0 and later, which have removed
 the legacy API including Field, BucketIterator, and the legacy IWSLT dataset.
 """
-from typing import Dict, List, Tuple, Iterator, Optional, Any
+from typing import Tuple
 import os
 import urllib.request
-import zipfile
 from collections import namedtuple
-from pathlib import Path
+
 
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
-# Modern torchtext imports
-from torchtext.vocab import build_vocab_from_iterator, Vocab
+
+# Replace torchtext dependency with our custom implementation
+from src.transformer.utils.vocab_utils import build_vocab_from_iterator, Vocab
 
 from src.transformer.utils.tokenization import Tokenizer
 
-# Define a Batch class to mimic the legacy BucketIterator.batch attributes
 class Batch:
     """
     A container for batched data with src and trg attributes.
@@ -47,7 +46,7 @@ class ModernVocab:
         
         Args:
             tokens: Iterator of tokens to build vocabulary from
-            specials: List of special tokens to include
+            specials: Special tokens to include
             min_freq: Minimum frequency for tokens to be included
         """
         if specials is None:
@@ -62,7 +61,7 @@ class ModernVocab:
             specials = ['<unk>'] + specials
             
         if tokens is not None:
-            # Create vocabulary
+            # Create vocabulary using our custom implementation
             self.vocab = build_vocab_from_iterator(
                 [[t] for t in tokens], 
                 min_freq=min_freq, 
@@ -79,10 +78,9 @@ class ModernVocab:
             )
             self.vocab.set_default_index(0)  # <unk> is at index 0
             
-        # Create itos (index to string) and stoi (string to index) dictionaries
-        # to maintain compatibility with legacy vocab interface
+        # Get itos and stoi from the custom Vocab
         self.itos = self.vocab.get_itos()
-        self.stoi = {token: idx for idx, token in enumerate(self.itos)}
+        self.stoi = self.vocab.get_stoi()
             
     def __len__(self):
         """
