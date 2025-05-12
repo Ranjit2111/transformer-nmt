@@ -193,21 +193,33 @@ class Vocab:
         self.itos = new_itos
 
 
-def _flatten_iterator(iterator: Iterable) -> Iterator:
+def _flatten_iterator(iterator):
     """
-    Flatten a nested iterator into a single iterator.
+    Flatten an iterator of iterables.
     
     Args:
-        iterator: Nested iterator
+        iterator: Iterator of iterables or single items
         
-    Returns:
-        Flattened iterator
+    Yields:
+        Flattened items
     """
-    for item in iterator:
-        if isinstance(item, (list, tuple)):
-            yield from item
+    # If we have a list or tuple of tokens
+    if isinstance(iterator, (list, tuple)):
+        # If this is a list of strings, it's already flattened (a single tokenized sentence)
+        if iterator and isinstance(iterator[0], str):
+            for item in iterator:
+                yield item
         else:
-            yield item
+            # This is a list of lists (multiple tokenized sentences)
+            for sublist in iterator:
+                if isinstance(sublist, (list, tuple)):
+                    for item in sublist:
+                        yield item
+                else:
+                    yield sublist
+    else:
+        # Single item, not an iterable
+        yield iterator
 
 
 def build_vocab_from_iterator(
@@ -231,9 +243,35 @@ def build_vocab_from_iterator(
         A Vocab object
     """
     counter = Counter()
+    items_seen = 0
+    
+    # Check if iterator is empty
+    if not iterator:
+        print("Warning: Empty iterator provided to build_vocab_from_iterator")
+        specials = specials or []
+        # Create vocab with just special tokens
+        token_to_idx = {token: idx for idx, token in enumerate(specials)}
+        return Vocab(token_to_idx)
+    
+    # Count tokens
     for tokens in iterator:
-        counter.update(_flatten_iterator(tokens))
+        items_seen += 1
         
+        # Handle different input formats
+        if isinstance(tokens, str):
+            # Single token
+            counter[tokens] += 1
+        elif isinstance(tokens, (list, tuple)):
+            # List of tokens (a single tokenized sentence)
+            counter.update(tokens)
+        else:
+            # Something else, try to flatten it
+            counter.update(_flatten_iterator(tokens))
+    
+    if items_seen == 0:
+        print("Warning: No items processed in build_vocab_from_iterator")
+    
+    # Process specials
     specials = specials or []
     
     # Filter and sort tokens by frequency
