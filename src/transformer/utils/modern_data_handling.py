@@ -235,9 +235,19 @@ class ModernField:
                 token_to_idx[token] = idx
                 idx += 1
         
-        # Create vocab with the mapping
-        self.vocab = Vocab(token_to_idx)
+        # Create vocab with the mapping - fixed to use our custom Vocab class
+        try:
+            # Import directly here to avoid circular imports
+            from src.transformer.utils.vocab_utils import Vocab as CustomVocab
+            self.vocab = CustomVocab(token_to_idx)
+        except ImportError:
+            # Fallback to using ModernVocab if import fails
+            self.vocab = ModernVocab(None, specials=specials)
+            self.vocab.stoi = token_to_idx
+            self.vocab.itos = {idx: token for token, idx in token_to_idx.items()}
+        
         print(f"Final vocabulary size: {len(self.vocab)}")
+        print(f"Vocabulary type: {type(self.vocab)}")
         
     def process(self, text):
         """
@@ -275,7 +285,7 @@ class TranslationDataset(Dataset):
     """
     Dataset for machine translation with source and target texts.
     """
-    def __init__(self, src_texts, tgt_texts, src_field, tgt_field):
+    def __init__(self, src_texts, tgt_texts, src_field, tgt_field, preprocess_and_cache=True):
         """
         Initialize a TranslationDataset.
         
@@ -284,12 +294,42 @@ class TranslationDataset(Dataset):
             tgt_texts: List of target texts
             src_field: Field for source language
             tgt_field: Field for target language
+            preprocess_and_cache: Whether to preprocess and cache tokenized data
         """
         assert len(src_texts) == len(tgt_texts), "Source and target texts must have the same length"
         self.src_texts = src_texts
         self.tgt_texts = tgt_texts
         self.src_field = src_field
         self.tgt_field = tgt_field
+        
+        # Preprocess and cache tokenized data if requested
+        self.cached_src = None
+        self.cached_tgt = None
+        if preprocess_and_cache:
+            self.preprocess_and_cache()
+        
+    def preprocess_and_cache(self):
+        """
+        Preprocess and cache tokenized data to avoid repeated tokenization.
+        """
+        print(f"Preprocessing and caching {len(self.src_texts)} examples...")
+        
+        # Use tqdm for progress tracking during preprocessing
+        from tqdm import tqdm
+        
+        # Preprocess source texts
+        self.cached_src = []
+        for src_text in tqdm(self.src_texts, desc="Preprocessing source texts", position=0):
+            processed = self.src_field.process(src_text)
+            self.cached_src.append(processed)
+            
+        # Preprocess target texts
+        self.cached_tgt = []
+        for tgt_text in tqdm(self.tgt_texts, desc="Preprocessing target texts", position=0):
+            processed = self.tgt_field.process(tgt_text)
+            self.cached_tgt.append(processed)
+            
+        print(f"Cached {len(self.cached_src)} preprocessed examples")
         
     def __len__(self):
         """
@@ -310,6 +350,11 @@ class TranslationDataset(Dataset):
         Returns:
             (source_text, target_text) pair
         """
+        # Return from cache if available
+        if self.cached_src is not None and self.cached_tgt is not None:
+            return self.cached_src[idx], self.cached_tgt[idx]
+        
+        # Otherwise process on-the-fly
         src_text = self.src_texts[idx]
         tgt_text = self.tgt_texts[idx]
         
@@ -333,7 +378,8 @@ class ModernBucketIterator:
     """
     A modern replacement for the legacy torchtext BucketIterator.
     """
-    def __init__(self, dataset, batch_size, sort_key=None, device=None, sort_within_batch=False):
+    def __init__(self, dataset, batch_size, sort_key=None, device=None, sort_within_batch=False, 
+                 num_workers=4, pin_memory=True):
         """
         Initialize a ModernBucketIterator.
         
@@ -343,12 +389,42 @@ class ModernBucketIterator:
             sort_key: Function to sort examples
             device: Device to place tensors on
             sort_within_batch: Whether to sort within each batch
+            num_workers: Number of worker processes for data loading
+            pin_memory: Whether to pin memory in CPU, speeding up transfer to GPU
         """
         self.dataset = dataset
         self.batch_size = batch_size
         self.sort_key = sort_key
-        self.device = device
+        
+        # Convert device to string for pickling if needed
+        if device is None:
+            self.device = None
+        elif isinstance(device, torch.device):
+            self.device_type = device.type
+            self.device_index = device.index
+            # We'll convert back to a torch.device in collate_fn
+            self.device = None
+        else:
+            # Keep the string representation
+            self.device = device
+            self.device_type = None
+            self.device_index = None
+        
         self.sort_within_batch = sort_within_batch
+        
+        # Handle Windows multiprocessing issues
+        if os.name == 'nt' and num_workers > 0:
+            import platform
+            # Only use multi-processing if not on Windows or using Python 3.8+
+            python_version = tuple(map(int, platform.python_version_tuple()))
+            if python_version < (3, 8):
+                print(f"WARNING: Windows with Python {platform.python_version()} detected. "
+                     f"Disabling multiprocessing for data loading to avoid issues. "
+                     f"Upgrade to Python 3.8+ for better multiprocessing support.")
+                num_workers = 0
+        
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory and torch.cuda.is_available()  # Only use pin_memory when CUDA is available
         
         # Get special token indices
         if hasattr(dataset, 'src_field') and dataset.src_field.vocab is not None:
@@ -366,7 +442,11 @@ class ModernBucketIterator:
             dataset,
             batch_size=batch_size,
             collate_fn=self.collate_fn,
-            shuffle=not sort_within_batch
+            shuffle=not sort_within_batch,
+            num_workers=self.num_workers if self.num_workers > 0 else 0,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.num_workers > 0,  # Keep workers alive between iterations
+            prefetch_factor=2 if self.num_workers > 0 else None  # Prefetch batches
         )
         
     def collate_fn(self, batch):
@@ -380,8 +460,8 @@ class ModernBucketIterator:
             Batch object with src and trg attributes
         """
         # Sort batch by source length if required
-        if self.sort_within_batch:
-            batch.sort(key=lambda x: len(x[0]), reverse=True)
+        if self.sort_within_batch and self.sort_key:
+            batch.sort(key=self.sort_key, reverse=True)
         
         # Split into source and target
         src_batch, tgt_batch = zip(*batch)
@@ -394,10 +474,20 @@ class ModernBucketIterator:
         src_padded = pad_sequence(src_tensors, batch_first=True, padding_value=self.src_pad_idx)
         tgt_padded = pad_sequence(tgt_tensors, batch_first=True, padding_value=self.tgt_pad_idx)
         
-        # Move to device if specified
+        # Reconstruct device if needed
+        device = None
         if self.device is not None:
-            src_padded = src_padded.to(self.device)
-            tgt_padded = tgt_padded.to(self.device)
+            device = self.device
+        elif self.device_type is not None:
+            if self.device_index is not None:
+                device = torch.device(self.device_type, self.device_index)
+            else:
+                device = torch.device(self.device_type)
+            
+        # Move to device if specified
+        if device is not None:
+            src_padded = src_padded.to(device)
+            tgt_padded = tgt_padded.to(device)
             
         # Create and return Batch
         return Batch(src=src_padded, trg=tgt_padded)
