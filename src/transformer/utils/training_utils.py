@@ -93,7 +93,9 @@ class Trainer:
         log_dir: Optional[str] = None,
         save_dir: Optional[str] = None,
         print_every: int = 100,
-        save_every: int = 1000
+        save_every: int = 1000,
+        use_amp: bool = True,
+        gradient_accumulation_steps: int = 1
     ):
         """
         Initialize trainer.
@@ -108,6 +110,8 @@ class Trainer:
             save_dir: Directory for saving checkpoints
             print_every: Print training info every N steps
             save_every: Save checkpoint every N steps
+            use_amp: Use Automatic Mixed Precision (fp16)
+            gradient_accumulation_steps: Number of steps to accumulate gradients
         """
         self.model = model
         self.optimizer = optimizer
@@ -117,6 +121,14 @@ class Trainer:
         self.save_dir = save_dir
         self.print_every = print_every
         self.save_every = save_every
+        self.use_amp = use_amp
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        
+        # Initialize GradScaler for mixed precision training
+        self.scaler = GradScaler() if self.use_amp else None
+        
+        # Enable cuDNN benchmarking for optimized performance
+        torch.backends.cudnn.benchmark = True
         
         # Create log directory and writer if specified
         if log_dir is not None:
@@ -168,6 +180,10 @@ class Trainer:
             ncols=100
         )
         
+        # Track gradients for accumulation
+        self.optimizer.zero_grad()
+        accumulated_batches = 0
+        
         for i, batch in progress_bar:
             # Extract source and target from batch
             if hasattr(batch, 'src') and hasattr(batch, 'trg'):
@@ -185,38 +201,93 @@ class Trainer:
                     except:
                         raise ValueError(f"Unrecognized batch format: {type(batch)}")
             
-            # Forward pass
-            self.optimizer.zero_grad()
-            
-            # The model expects (src, trg) as inputs
-            output = self.model(src, trg[:, :-1])
-            
-            # The loss function expects (output, target)
-            # Reshape: [batch_size, seq_len, vocab_size] -> [batch_size * seq_len, vocab_size]
-            output_dim = output.shape[-1]
-            output = output.contiguous().view(-1, output_dim)
-            
-            # Exclude the <sos> token (first token)
-            # Reshape: [batch_size, seq_len] -> [batch_size * seq_len]
-            trg = trg[:, 1:].contiguous().view(-1)
-            
-            # Calculate loss
-            loss = self.criterion(output, trg)
-            
-            # Backward pass and optimize
-            loss.backward()
-            
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
-            
-            self.optimizer.step()
-            
-            # Update learning rate scheduler if it exists
-            if self.scheduler is not None:
-                self.scheduler.step()
+            # Forward pass with mixed precision if enabled
+            if self.use_amp:
+                with autocast():
+                    # The model expects (src, trg) as inputs
+                    output = self.model(src, trg[:, :-1])
+                    
+                    # The loss function expects (output, target)
+                    # Reshape: [batch_size, seq_len, vocab_size] -> [batch_size * seq_len, vocab_size]
+                    output_dim = output.shape[-1]
+                    output = output.contiguous().view(-1, output_dim)
+                    
+                    # Exclude the <sos> token (first token)
+                    # Reshape: [batch_size, seq_len] -> [batch_size * seq_len]
+                    trg = trg[:, 1:].contiguous().view(-1)
+                    
+                    # Calculate loss
+                    loss = self.criterion(output, trg)
+                    
+                    # Scale loss by gradient accumulation steps
+                    if self.gradient_accumulation_steps > 1:
+                        loss = loss / self.gradient_accumulation_steps
                 
+                # Backward pass with scaler
+                self.scaler.scale(loss).backward()
+                
+                # Update parameters if we've accumulated enough batches
+                accumulated_batches += 1
+                if accumulated_batches % self.gradient_accumulation_steps == 0:
+                    # Unscaled gradients for clipping
+                    if self.clip > 0:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+                    
+                    # Update with scaler
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    
+                    # Update learning rate scheduler if it exists
+                    if self.scheduler is not None:
+                        self.scheduler.step()
+                    
+                    # Reset gradients
+                    self.optimizer.zero_grad()
+                    accumulated_batches = 0
+            else:
+                # Standard precision training (fallback)
+                # The model expects (src, trg) as inputs
+                output = self.model(src, trg[:, :-1])
+                
+                # The loss function expects (output, target)
+                # Reshape: [batch_size, seq_len, vocab_size] -> [batch_size * seq_len, vocab_size]
+                output_dim = output.shape[-1]
+                output = output.contiguous().view(-1, output_dim)
+                
+                # Exclude the <sos> token (first token)
+                # Reshape: [batch_size, seq_len] -> [batch_size * seq_len]
+                trg = trg[:, 1:].contiguous().view(-1)
+                
+                # Calculate loss
+                loss = self.criterion(output, trg)
+                
+                # Scale loss by gradient accumulation steps
+                if self.gradient_accumulation_steps > 1:
+                    loss = loss / self.gradient_accumulation_steps
+                
+                # Backward pass
+                loss.backward()
+                
+                # Update parameters if we've accumulated enough batches
+                accumulated_batches += 1
+                if accumulated_batches % self.gradient_accumulation_steps == 0:
+                    # Gradient clipping
+                    if self.clip > 0:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+                    
+                    self.optimizer.step()
+                    
+                    # Update learning rate scheduler if it exists
+                    if self.scheduler is not None:
+                        self.scheduler.step()
+                    
+                    # Reset gradients
+                    self.optimizer.zero_grad()
+                    accumulated_batches = 0
+            
             # Update tracking variables
-            epoch_loss += loss.item()
+            epoch_loss += loss.item() * (1.0 if self.gradient_accumulation_steps == 1 else self.gradient_accumulation_steps)
             self.step += 1
             
             # Update progress bar with current loss
@@ -254,6 +325,31 @@ class Trainer:
             # Save checkpoint
             if self.save_dir is not None and self.step % self.save_every == 0:
                 self.save_checkpoint(f'step_{self.step}')
+        
+        # Process any remaining accumulated gradients
+        if accumulated_batches > 0 and accumulated_batches % self.gradient_accumulation_steps != 0:
+            if self.use_amp:
+                # Unscaled gradients for clipping
+                if self.clip > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+                
+                # Update with scaler
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                # Gradient clipping
+                if self.clip > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+                
+                self.optimizer.step()
+            
+            # Update learning rate scheduler if it exists
+            if self.scheduler is not None:
+                self.scheduler.step()
+            
+            # Reset gradients
+            self.optimizer.zero_grad()
         
         # Close progress bar
         progress_bar.close()
@@ -310,16 +406,29 @@ class Trainer:
                         except:
                             raise ValueError(f"Unrecognized batch format: {type(batch)}")
                 
-                # Forward pass
-                output = self.model(src, trg[:, :-1])
+                # Forward pass (use autocast during evaluation too, but no scaling needed)
+                if self.use_amp:
+                    with autocast():
+                        output = self.model(src, trg[:, :-1])
+                        
+                        # Reshape for loss calculation
+                        output_dim = output.shape[-1]
+                        output = output.contiguous().view(-1, output_dim)
+                        trg = trg[:, 1:].contiguous().view(-1)
+                        
+                        # Calculate loss
+                        loss = self.criterion(output, trg)
+                else:
+                    output = self.model(src, trg[:, :-1])
+                    
+                    # Reshape for loss calculation
+                    output_dim = output.shape[-1]
+                    output = output.contiguous().view(-1, output_dim)
+                    trg = trg[:, 1:].contiguous().view(-1)
+                    
+                    # Calculate loss
+                    loss = self.criterion(output, trg)
                 
-                # Reshape for loss calculation
-                output_dim = output.shape[-1]
-                output = output.contiguous().view(-1, output_dim)
-                trg = trg[:, 1:].contiguous().view(-1)
-                
-                # Calculate loss
-                loss = self.criterion(output, trg)
                 epoch_loss += loss.item()
                 
                 # Update progress bar with current loss
@@ -366,6 +475,8 @@ class Trainer:
         print(f"Starting training for {n_epochs} epochs")
         print(f"Training on {len(train_iterator)} batches per epoch")
         print(f"Validating on {len(valid_iterator)} batches per epoch")
+        print(f"Mixed precision training: {'Enabled' if self.use_amp else 'Disabled'}")
+        print(f"Gradient accumulation steps: {self.gradient_accumulation_steps}")
         print("-" * 60)
         
         # Create an epochs progress tracker
@@ -473,12 +584,18 @@ class Trainer:
             'valid_losses': self.valid_losses,
             'train_ppls': self.train_ppls,
             'valid_ppls': self.valid_ppls,
-            'best_valid_loss': self.best_valid_loss
+            'best_valid_loss': self.best_valid_loss,
+            'use_amp': self.use_amp,
+            'gradient_accumulation_steps': self.gradient_accumulation_steps
         }
         
         # Add scheduler state if it exists
         if self.scheduler is not None:
             checkpoint['scheduler'] = self.scheduler.state_dict()
+            
+        # Add scaler state if using AMP
+        if self.use_amp and self.scaler is not None:
+            checkpoint['scaler'] = self.scaler.state_dict()
             
         torch.save(checkpoint, os.path.join(self.save_dir, f'{name}.pt'))
         
@@ -502,9 +619,21 @@ class Trainer:
         self.valid_ppls = checkpoint['valid_ppls']
         self.best_valid_loss = checkpoint['best_valid_loss']
         
+        # Load gradient accumulation steps if available
+        if 'gradient_accumulation_steps' in checkpoint:
+            self.gradient_accumulation_steps = checkpoint['gradient_accumulation_steps']
+            
+        # Load AMP settings if available
+        if 'use_amp' in checkpoint:
+            self.use_amp = checkpoint['use_amp']
+            
         # Load scheduler state if it exists
         if self.scheduler is not None and 'scheduler' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler'])
+            
+        # Load scaler state if it exists and we're using AMP
+        if self.use_amp and self.scaler is not None and 'scaler' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler'])
 
     def plot_loss(self, figsize: Tuple[int, int] = (10, 6)):
         """

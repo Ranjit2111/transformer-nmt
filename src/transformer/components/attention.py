@@ -64,7 +64,8 @@ class ScaledDotProductAttention(nn.Module):
         if mask is not None:
             # Set masked positions to a large negative value before softmax
             # so they evaluate to ~0 after softmax
-            attention_scores = attention_scores.masked_fill(mask == 0, -1e9)
+            # Using a smaller constant to avoid fp16 overflow
+            attention_scores = attention_scores.masked_fill(mask == 0, -1e4)
         
         # Apply softmax to get attention weights (probabilities summing to 1)
         attention_weights = self.softmax(attention_scores)

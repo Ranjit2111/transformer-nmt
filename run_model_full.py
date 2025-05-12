@@ -20,6 +20,12 @@ from src.transformer.utils.modern_data_handling import TranslationDataset, Moder
 from src.transformer.utils.translator import Translator
 
 
+# Define sort_key function outside the class so it can be pickled
+def get_source_length(x):
+    """Get the length of the source sequence for sorting."""
+    return len(x[0])
+
+
 class CustomIWSLTDataset:
     """
     Handler for the manually downloaded IWSLT English-Vietnamese dataset.
@@ -31,7 +37,9 @@ class CustomIWSLTDataset:
         batch_size,
         device,
         max_length=256,
-        min_freq=2
+        min_freq=2,
+        num_workers=4,
+        pin_memory=True
     ):
         """
         Initialize the IWSLT dataset handler.
@@ -42,9 +50,13 @@ class CustomIWSLTDataset:
             device: Device to place tensors on (CPU/GPU)
             max_length: Maximum sequence length to use
             min_freq: Minimum frequency for including words in vocabulary
+            num_workers: Number of workers for data loading
+            pin_memory: Whether to pin memory for faster GPU transfer
         """
         self.tokenizer = tokenizer
         self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory and torch.cuda.is_available()
         
         # Handle device
         if isinstance(device, str):
@@ -149,20 +161,51 @@ class CustomIWSLTDataset:
         test_src = read_file(test_en_path)
         test_tgt = read_file(test_vi_path)
         
-        # Create datasets
+        # Filter out examples that are too long to avoid padding/truncation issues
+        max_len = self.max_length - 2  # Allow space for special tokens
+        
+        def filter_by_length(src_texts, tgt_texts, max_tokens):
+            filtered_src = []
+            filtered_tgt = []
+            total = len(src_texts)
+            filtered_count = 0
+            
+            for src, tgt in zip(src_texts, tgt_texts):
+                src_tokens = self.tokenizer.tokenize_en(src)
+                tgt_tokens = self.tokenizer.tokenize_vi(tgt)
+                
+                if len(src_tokens) <= max_tokens and len(tgt_tokens) <= max_tokens:
+                    filtered_src.append(src)
+                    filtered_tgt.append(tgt)
+                else:
+                    filtered_count += 1
+            
+            print(f"  Filtered out {filtered_count}/{total} examples ({filtered_count/total:.1%}) due to length > {max_tokens}")
+            return filtered_src, filtered_tgt
+        
+        # Filter datasets by length
+        train_src, train_tgt = filter_by_length(train_src, train_tgt, max_len)
+        valid_src, valid_tgt = filter_by_length(valid_src, valid_tgt, max_len)
+        test_src, test_tgt = filter_by_length(test_src, test_tgt, max_len)
+        
+        # Create datasets with preprocessing and caching
+        print("Creating and preprocessing datasets...")
         train_data = TranslationDataset(
             train_src, train_tgt, 
-            self.source_field, self.target_field
+            self.source_field, self.target_field,
+            preprocess_and_cache=True
         )
         
         valid_data = TranslationDataset(
             valid_src, valid_tgt, 
-            self.source_field, self.target_field
+            self.source_field, self.target_field,
+            preprocess_and_cache=True
         )
         
         test_data = TranslationDataset(
             test_src, test_tgt, 
-            self.source_field, self.target_field
+            self.source_field, self.target_field,
+            preprocess_and_cache=True
         )
         
         # Print dataset sizes
@@ -234,30 +277,43 @@ class CustomIWSLTDataset:
             Tuple of (train, validation, test) iterators
         """
         print("Creating iterators...")
+        print(f"  Using {self.num_workers} worker threads for data loading")
+        print(f"  Pin memory: {self.pin_memory}")
         
-        # Create iterators
+        # Use num_workers=0 on Windows if multiprocessing issue occurs
+        workers = 0 if os.name == 'nt' and self.num_workers > 0 else self.num_workers
+        if os.name == 'nt' and self.num_workers > 0:
+            print("  WARNING: Using single-threaded data loading on Windows to avoid multiprocessing issues")
+        
+        # Create iterators with improved data loading
         train_iterator = ModernBucketIterator(
             self.train_data,
             batch_size=self.batch_size,
-            sort_key=lambda x: len(x[0]),
+            sort_key=get_source_length,  # Use the defined function instead of lambda
             sort_within_batch=True,
-            device=self.device
+            device=self.device,
+            num_workers=workers,
+            pin_memory=self.pin_memory
         )
         
         valid_iterator = ModernBucketIterator(
             self.valid_data,
             batch_size=self.batch_size,
-            sort_key=lambda x: len(x[0]),
+            sort_key=get_source_length,  # Use the defined function instead of lambda
             sort_within_batch=True,
-            device=self.device
+            device=self.device,
+            num_workers=workers,
+            pin_memory=self.pin_memory
         )
         
         test_iterator = ModernBucketIterator(
             self.test_data,
             batch_size=self.batch_size,
-            sort_key=lambda x: len(x[0]),
+            sort_key=get_source_length,  # Use the defined function instead of lambda
             sort_within_batch=True,
-            device=self.device
+            device=self.device,
+            num_workers=workers,
+            pin_memory=self.pin_memory
         )
         
         return train_iterator, valid_iterator, test_iterator
@@ -297,7 +353,9 @@ def setup_model_and_dataset(args, hyperparams):
             batch_size=hyperparams.batch_size,
             device=device,
             max_length=hyperparams.max_seq_length,
-            min_freq=hyperparams.min_freq
+            min_freq=hyperparams.min_freq,
+            num_workers=hyperparams.num_workers,
+            pin_memory=hyperparams.pin_memory
         )
         
         # Get special token indices
@@ -307,6 +365,7 @@ def setup_model_and_dataset(args, hyperparams):
             
     except Exception as e:
         print(f"Error loading dataset: {e}")
+        raise e  # Re-raise the exception to propagate it
     
     # Create model
     model = TransformerNMT(
@@ -352,6 +411,9 @@ def train(args, hyperparams):
     n_batches_per_epoch = len(train_iterator)
     n_examples = len(dataset.train_data)
     
+    # Enable cudnn benchmark mode for optimized performance
+    torch.backends.cudnn.benchmark = True
+    
     # Time a single batch
     model.train()
     dummy_optimizer = torch.optim.Adam(model.parameters(), lr=float(hyperparams.init_lr))
@@ -372,7 +434,15 @@ def train(args, hyperparams):
         break
     
     # Calculate estimates
-    epoch_time_estimate = batch_time * n_batches_per_epoch
+    steps_per_epoch = n_batches_per_epoch // hyperparams.gradient_accumulation_steps
+    if n_batches_per_epoch % hyperparams.gradient_accumulation_steps != 0:
+        steps_per_epoch += 1
+    
+    total_steps = steps_per_epoch * hyperparams.epochs
+    
+    # With gradient accumulation, each "step" is actually multiple batches
+    effective_batch_time = batch_time
+    epoch_time_estimate = effective_batch_time * steps_per_epoch
     total_time_estimate = epoch_time_estimate * hyperparams.epochs
     
     # Convert to reasonable units
@@ -387,7 +457,11 @@ def train(args, hyperparams):
     
     print(f"Dataset size: {n_examples} examples")
     print(f"Batch size: {batch_size}")
+    print(f"Gradient accumulation steps: {hyperparams.gradient_accumulation_steps}")
+    print(f"Effective batch size: {batch_size * hyperparams.gradient_accumulation_steps}")
     print(f"Batches per epoch: {n_batches_per_epoch}")
+    print(f"Optimization steps per epoch: {steps_per_epoch}")
+    print(f"Mixed precision (fp16): {hyperparams.fp16}")
     print(f"Estimated time per epoch: {epoch_time_estimate:.2f} seconds")
     print(f"Estimated total training time for {hyperparams.epochs} epochs: {time_str}")
     
@@ -405,7 +479,9 @@ def train(args, hyperparams):
         scheduler=None,
         clip=float(hyperparams.clip),
         log_dir="results/logs",
-        save_dir="results/checkpoints"
+        save_dir="results/checkpoints",
+        use_amp=hyperparams.fp16,
+        gradient_accumulation_steps=hyperparams.gradient_accumulation_steps
     )
     
     # Load checkpoint if provided
@@ -519,6 +595,11 @@ def main():
     parser.add_argument("--text", type=str, help="Text to translate")
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size for beam search")
     parser.add_argument("--interactive", action="store_true", help="Interactive translation mode")
+    parser.add_argument("--batch_size", type=int, help="Override batch size in config")
+    parser.add_argument("--grad_accum", type=int, help="Override gradient accumulation steps in config")
+    parser.add_argument("--workers", type=int, help="Override number of workers in config")
+    parser.add_argument("--no_fp16", action="store_true", help="Disable mixed precision training")
+    parser.add_argument("--single_thread", action="store_true", help="Force single-threaded data loading (Windows workaround)")
     
     args = parser.parse_args()
     
@@ -527,6 +608,28 @@ def main():
         hyperparams = params.__class__(args.config)
     else:
         hyperparams = params
+    
+    # Override hyperparameters from command line
+    if args.batch_size:
+        print(f"Overriding batch size from {hyperparams.batch_size} to {args.batch_size}")
+        hyperparams.batch_size = args.batch_size
+        
+    if args.grad_accum:
+        print(f"Overriding gradient accumulation steps from {hyperparams.gradient_accumulation_steps} to {args.grad_accum}")
+        hyperparams.gradient_accumulation_steps = args.grad_accum
+        
+    if args.workers:
+        print(f"Overriding worker count from {hyperparams.num_workers} to {args.workers}")
+        hyperparams.num_workers = args.workers
+    
+    if args.no_fp16:
+        print("Disabling mixed precision training")
+        hyperparams.fp16 = False
+        
+    if args.single_thread or (os.name == 'nt' and hyperparams.num_workers > 0):
+        print("Windows detected - forcing single-threaded data loading to avoid multiprocessing issues")
+        print("You can still get good performance with a high batch size and gradient accumulation")
+        hyperparams.num_workers = 0
     
     # Check if we need to create directories
     if args.action == "train":

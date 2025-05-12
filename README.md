@@ -12,6 +12,39 @@ Key features:
 - Integrated training, evaluation, and translation pipelines
 - Simplified demo script for quick demonstrations
 
+## Optimized for High-End Hardware
+
+This implementation is optimized for high-end GPUs like the NVIDIA RTX 4080 Super. The optimizations include:
+
+- Mixed precision training (FP16) for faster computation
+- Multi-worker data loading and preprocessing
+- Gradient accumulation for effective larger batch sizes
+- Data preprocessing and caching to reduce CPU bottlenecks
+- cuDNN benchmarking for optimized convolution operations
+
+## Setup
+
+1. Create a virtual environment and install requirements:
+
+```bash
+python -m venv venv
+venv\Scripts\activate  # On Windows
+source venv/bin/activate  # On Linux/Mac
+pip install -r requirements.txt
+```
+
+2. Download the IWSLT'15 English-Vietnamese dataset and place it in the `data/IWSLT'15 en-vi/` directory with the following structure:
+
+```
+data/IWSLT'15 en-vi/
+  train.en.txt
+  train.vi.txt
+  tst2012.en.txt
+  tst2012.vi.txt
+  tst2013.en.txt
+  tst2013.vi.txt
+```
+
 ## Architecture
 
 The Transformer model consists of:
@@ -156,3 +189,57 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - The implementation is inspired by the paper "Attention Is All You Need" by Vaswani et al.
 - Thanks to the PyTorch and torchtext teams for their excellent libraries
+
+## Running the Model
+
+### Training
+
+For RTX 4080 Super / high-end GPUs:
+
+```bash
+python run_model_full.py train --batch_size 256 --grad_accum 4 --workers 4
+```
+
+This uses a batch size of 256 with 4 gradient accumulation steps (effective batch size: 1024).
+
+### Full Training Parameters
+
+You can adjust various parameters:
+
+```bash
+python run_model_full.py train --batch_size 256 --grad_accum 4 --workers 4 --epochs 50
+```
+
+- `--batch_size`: Physical batch size (try 192, 256, or 320 on 16GB VRAM)
+- `--grad_accum`: Gradient accumulation steps (effective batch size = batch_size × grad_accum)
+- `--workers`: Number of CPU worker threads for data loading (recommend 4-8 based on CPU cores)
+- `--no_fp16`: Disable mixed precision training (not recommended for NVIDIA RTX GPUs)
+- `--epochs`: Number of training epochs
+
+### Translation
+
+Translate a specific sentence:
+
+```bash
+python run_model_full.py translate --checkpoint results/checkpoints/best_model.pt --text "Hello, how are you today?"
+```
+
+Interactive translation mode:
+
+```bash
+python run_model_full.py translate --checkpoint results/checkpoints/best_model.pt --interactive
+```
+
+## Performance Recommendations
+
+- For RTX 4080 Super (16GB): `--batch_size 256 --grad_accum 4 --workers 4`
+- For RTX 4090 (24GB): `--batch_size 384 --grad_accum 4 --workers 6`
+- For RTX 3080 (10GB): `--batch_size 192 --grad_accum 4 --workers 4`
+
+## Efficient Version
+
+For faster experimentation, you can use the efficient version which uses a smaller model and only 20% of the dataset:
+
+```bash
+python run_efficient.py train
+```
