@@ -12,24 +12,14 @@ import torch.optim as optim
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.tensorboard import SummaryWriter
-# Try to import from legacy first, define fallbacks if not available
-try:
-    from torchtext.legacy.data import BucketIterator, Batch
-    USING_LEGACY = True
-except ImportError:
-    # Define fallbacks for when legacy is not available
-    import warnings
-    warnings.warn("Using fallbacks for torchtext.legacy. Some functionality may be limited.")
-    USING_LEGACY = False
-    
-    # Simple container classes to mimic legacy API
-    class Batch:
-        """Simple batch container for when legacy is not available."""
-        def __init__(self, src, trg):
-            self.src = src
-            self.trg = trg
-    
-    # BucketIterator will be handled differently based on context
+
+# Remove torchtext.legacy imports
+# Define fallbacks without mentioning legacy
+class Batch:
+    """Simple batch container with src and trg attributes."""
+    def __init__(self, src, trg):
+        self.src = src
+        self.trg = trg
 
 import numpy as np
 from tqdm import tqdm
